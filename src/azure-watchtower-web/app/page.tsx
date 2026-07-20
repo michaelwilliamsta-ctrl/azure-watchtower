@@ -1,52 +1,64 @@
 "use client";
 
+import {
+  InteractionStatus,
+  type AccountInfo,
+} from "@azure/msal-browser";
+import { useMsal } from "@azure/msal-react";
 import { useState } from "react";
-
-type HealthResponse = {
-  status: string;
-  version: string;
-  service: string;
-};
+import {
+  azureTokenRequest,
+  loginRequest,
+} from "@/lib/auth/msal-config";
 
 export default function Home() {
-  const [statusMessage, setStatusMessage] = useState(
-    "Azure tenant connection will be added in the next milestone.",
+  const { instance, accounts, inProgress } = useMsal();
+  const [message, setMessage] = useState(
+    "Connect your Microsoft account to begin.",
   );
 
-  const [isChecking, setIsChecking] = useState(false);
+  const account: AccountInfo | undefined =
+    instance.getActiveAccount() ?? accounts[0];
 
-  async function checkPlatform(): Promise<void> {
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+  async function signIn(): Promise<void> {
+    await instance.loginRedirect(loginRequest);
+  }
 
-    if (!apiBaseUrl) {
-      setStatusMessage("The Azure Watchtower API URL is not configured.");
+  async function testAzureAccess(): Promise<void> {
+    if (!account) {
+      setMessage("Sign in before requesting Azure access.");
       return;
     }
 
     try {
-      setIsChecking(true);
-      setStatusMessage("Checking Azure Watchtower platform...");
+      setMessage("Requesting Azure access token...");
 
-      const response = await fetch(`${apiBaseUrl}/api/health`);
+      const result = await instance.acquireTokenSilent({
+        ...azureTokenRequest,
+        account,
+      });
 
-      if (!response.ok) {
-        throw new Error(`API returned status ${response.status}.`);
-      }
-
-      const health = (await response.json()) as HealthResponse;
-
-      setStatusMessage(
-        `${health.service} is ${health.status} - version ${health.version}`,
+      setMessage(
+        `Azure access confirmed for ${result.account?.username ?? account.username}.`,
       );
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "An unknown error occurred.";
-
-      setStatusMessage(`Unable to reach the API. ${message}`);
-    } finally {
-      setIsChecking(false);
+    } catch {
+      await instance.acquireTokenRedirect({
+        ...azureTokenRequest,
+        account,
+      });
     }
   }
+
+  async function signOut(): Promise<void> {
+    await instance.logoutRedirect({
+      account,
+      postLogoutRedirectUri:
+        process.env.NEXT_PUBLIC_ENTRA_REDIRECT_URI ??
+        "http://localhost:3000",
+    });
+  }
+
+  const busy = inProgress !== InteractionStatus.None;
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
@@ -60,67 +72,53 @@ export default function Home() {
             Azure Watchtower
           </h1>
 
-          <p className="mt-6 max-w-3xl text-xl leading-8 text-slate-300">
+          <p className="mt-6 text-xl text-slate-300">
             Reduce cloud risk through Blast Radius Intelligence.
           </p>
 
-          <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400">
-            Discover attack paths, understand lateral movement, and prioritize
-            the Azure security changes that reduce risk the most.
-          </p>
-
-          <div className="mt-10 flex flex-col items-start gap-5 sm:flex-row sm:items-center">
+          {!account ? (
             <button
               type="button"
-              onClick={checkPlatform}
-              disabled={isChecking}
-              className="rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={signIn}
+              disabled={busy}
+              className="mt-10 rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
             >
-              {isChecking ? "Checking Platform..." : "Connect Azure"}
+              Connect Azure
             </button>
+          ) : (
+            <div className="mt-10 space-y-5">
+              <p className="text-slate-300">
+                Signed in as{" "}
+                <span className="font-semibold text-white">
+                  {account.username}
+                </span>
+              </p>
 
-            <p
-              className="max-w-xl text-sm leading-6 text-slate-400"
-              aria-live="polite"
-            >
-              {statusMessage}
-            </p>
-          </div>
-        </div>
+              <div className="flex flex-wrap gap-4">
+                <button
+                  type="button"
+                  onClick={testAzureAccess}
+                  disabled={busy}
+                  className="rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+                >
+                  Test Azure Access
+                </button>
 
-        <div className="mt-20 grid max-w-5xl gap-6 md:grid-cols-3">
-          <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
-            <p className="text-sm font-semibold text-sky-400">Discover</p>
-            <h2 className="mt-3 text-xl font-semibold">
-              Azure Resource Inventory
-            </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              Build a security-focused inventory of subscriptions, networks,
-              identities, and critical resources.
-            </p>
-          </article>
+                <button
+                  type="button"
+                  onClick={signOut}
+                  disabled={busy}
+                  className="rounded-lg border border-slate-700 px-6 py-3 font-semibold text-slate-200 hover:bg-slate-900 disabled:opacity-60"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
 
-          <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
-            <p className="text-sm font-semibold text-sky-400">Analyze</p>
-            <h2 className="mt-3 text-xl font-semibold">
-              Attack Path Intelligence
-            </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              Understand how a compromised resource could expose connected
-              systems and sensitive services.
-            </p>
-          </article>
-
-          <article className="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
-            <p className="text-sm font-semibold text-sky-400">Reduce</p>
-            <h2 className="mt-3 text-xl font-semibold">
-              Prioritized Risk Reduction
-            </h2>
-            <p className="mt-3 text-sm leading-6 text-slate-400">
-              Focus remediation work on the changes that reduce the greatest
-              amount of potential blast radius.
-            </p>
-          </article>
+          <p className="mt-5 text-sm text-slate-400" aria-live="polite">
+            {message}
+          </p>
         </div>
       </section>
     </main>
