@@ -17,6 +17,15 @@ import {
   listAzureSubscriptions,
 } from "@/lib/azure/subscriptions-client";
 import type { AzureSubscription } from "@/lib/azure/subscription-types";
+import {
+  querySubscriptionResources,
+  ResourceGraphApiError,
+  summarizeResourcesByType,
+} from "@/lib/inventory/resource-graph-client";
+import type {
+  AzureResource,
+  ResourceTypeSummary,
+} from "@/lib/inventory/inventory-types";
 
 export default function Home() {
   const { instance, accounts, inProgress } = useMsal();
@@ -25,119 +34,179 @@ export default function Home() {
     AzureSubscription[]
   >([]);
 
+  const [selectedSubscriptionId, setSelectedSubscriptionId] =
+    useState("");
+
+  const [resources, setResources] = useState<
+    AzureResource[]
+  >([]);
+
+  const [resourceSummary, setResourceSummary] = useState<
+    ResourceTypeSummary[]
+  >([]);
+
   const [statusMessage, setStatusMessage] = useState(
-    "Connect your Microsoft account to discover Azure subscriptions.",
+    "Connect your Microsoft account to begin.",
   );
 
-  const [isLoadingSubscriptions, setIsLoadingSubscriptions] =
+  const [isDiscoveringSubscriptions, setIsDiscoveringSubscriptions] =
+    useState(false);
+
+  const [isScanningResources, setIsScanningResources] =
     useState(false);
 
   const account: AccountInfo | undefined =
     instance.getActiveAccount() ?? accounts[0];
 
-  const interactionInProgress =
-    inProgress !== InteractionStatus.None;
+  const busy =
+    inProgress !== InteractionStatus.None ||
+    isDiscoveringSubscriptions ||
+    isScanningResources;
 
   async function signIn(): Promise<void> {
+    setStatusMessage("Opening Microsoft sign-in...");
+    await instance.loginRedirect(loginRequest);
+  }
+
+  async function getAzureAccessToken(): Promise<string> {
+    if (!account) {
+      throw new Error("No signed-in Microsoft account was found.");
+    }
+
     try {
-      setStatusMessage("Opening Microsoft sign-in...");
+      const result = await instance.acquireTokenSilent({
+        ...azureTokenRequest,
+        account,
+      });
 
-      await instance.loginRedirect(loginRequest);
+      return result.accessToken;
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "An unexpected sign-in error occurred.";
+      if (error instanceof InteractionRequiredAuthError) {
+        await instance.acquireTokenRedirect({
+          ...azureTokenRequest,
+          account,
+        });
+      }
 
-      setStatusMessage(`Microsoft sign-in failed: ${message}`);
+      throw error;
     }
   }
 
   async function discoverSubscriptions(): Promise<void> {
     if (!account) {
-      setStatusMessage(
-        "Sign in before discovering Azure subscriptions.",
-      );
+      setStatusMessage("Sign in before discovering subscriptions.");
       return;
     }
 
     try {
-      setIsLoadingSubscriptions(true);
+      setIsDiscoveringSubscriptions(true);
       setSubscriptions([]);
-      setStatusMessage("Acquiring Azure access token...");
-
-      const tokenResult = await instance.acquireTokenSilent({
-        ...azureTokenRequest,
-        account,
-      });
-
+      setSelectedSubscriptionId("");
+      setResources([]);
+      setResourceSummary([]);
       setStatusMessage("Discovering Azure subscriptions...");
 
-      const discoveredSubscriptions =
-        await listAzureSubscriptions(tokenResult.accessToken);
+      const accessToken = await getAzureAccessToken();
+      const result = await listAzureSubscriptions(accessToken);
 
-      setSubscriptions(discoveredSubscriptions);
+      setSubscriptions(result);
 
-      if (discoveredSubscriptions.length === 0) {
+      if (result.length === 0) {
         setStatusMessage(
-          "Authentication succeeded, but this account cannot access any Azure subscriptions in this tenant.",
+          "No accessible Azure subscriptions were found.",
         );
         return;
       }
 
+      setSelectedSubscriptionId(result[0].subscriptionId);
+
       setStatusMessage(
-        `Discovered ${discoveredSubscriptions.length} accessible Azure subscription${
-          discoveredSubscriptions.length === 1 ? "" : "s"
+        `Discovered ${result.length} accessible subscription${
+          result.length === 1 ? "" : "s"
+        }. Select a subscription and run an inventory scan.`,
+      );
+    } catch (error) {
+      handleAzureError(error, "Subscription discovery failed");
+    } finally {
+      setIsDiscoveringSubscriptions(false);
+    }
+  }
+
+  async function scanSelectedSubscription(): Promise<void> {
+    if (!selectedSubscriptionId) {
+      setStatusMessage("Select a subscription before running a scan.");
+      return;
+    }
+
+    try {
+      setIsScanningResources(true);
+      setResources([]);
+      setResourceSummary([]);
+      setStatusMessage("Querying Azure Resource Graph...");
+
+      const accessToken = await getAzureAccessToken();
+
+      const discoveredResources =
+        await querySubscriptionResources(
+          accessToken,
+          selectedSubscriptionId,
+        );
+
+      const summary =
+        summarizeResourcesByType(discoveredResources);
+
+      setResources(discoveredResources);
+      setResourceSummary(summary);
+
+      setStatusMessage(
+        `Inventory scan completed. Discovered ${discoveredResources.length} resource${
+          discoveredResources.length === 1 ? "" : "s"
+        } across ${summary.length} resource type${
+          summary.length === 1 ? "" : "s"
         }.`,
       );
     } catch (error) {
-      if (error instanceof InteractionRequiredAuthError) {
-        setStatusMessage(
-          "Additional Microsoft consent is required. Redirecting...",
-        );
-
-        await instance.acquireTokenRedirect({
-          ...azureTokenRequest,
-          account,
-        });
-
-        return;
-      }
-
-      if (error instanceof AzureApiError) {
-        if (error.status === 401) {
-          setStatusMessage(
-            "Azure rejected the access token. Sign out, sign back in, and try again.",
-          );
-          return;
-        }
+      if (error instanceof ResourceGraphApiError) {
+        console.error(error.responseBody);
 
         if (error.status === 403) {
           setStatusMessage(
-            "Your account signed in successfully but does not have permission to list Azure subscriptions.",
+            "The signed-in account does not have permission to query Azure Resource Graph for this subscription.",
           );
           return;
         }
 
         setStatusMessage(
-          `Azure subscription discovery failed with status ${error.status}.`,
+          `Resource inventory failed with Azure status ${error.status}.`,
         );
-
-        console.error(error.responseBody);
         return;
       }
 
-      const message =
-        error instanceof Error
-          ? error.message
-          : "An unexpected discovery error occurred.";
+      handleAzureError(error, "Resource inventory failed");
+    } finally {
+      setIsScanningResources(false);
+    }
+  }
+
+  function handleAzureError(
+    error: unknown,
+    prefix: string,
+  ): void {
+    if (error instanceof AzureApiError) {
+      console.error(error.responseBody);
 
       setStatusMessage(
-        `Unable to discover subscriptions: ${message}`,
+        `${prefix} with Azure status ${error.status}.`,
       );
-    } finally {
-      setIsLoadingSubscriptions(false);
+      return;
     }
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : "An unexpected error occurred.";
+
+    setStatusMessage(`${prefix}: ${message}`);
   }
 
   async function signOut(): Promise<void> {
@@ -149,14 +218,11 @@ export default function Home() {
     });
   }
 
-  const busy =
-    interactionInProgress || isLoadingSubscriptions;
-
   return (
     <main className="min-h-screen bg-slate-950 text-white">
       <section className="mx-auto min-h-screen max-w-7xl px-6 py-20 lg:px-8">
         <div className="mx-auto max-w-5xl">
-          <header className="pt-16">
+          <header className="pt-10">
             <p className="mb-6 text-sm font-semibold uppercase tracking-[0.3em] text-sky-400">
               Blast Radius Intelligence
             </p>
@@ -169,25 +235,23 @@ export default function Home() {
               Reduce cloud risk through Blast Radius Intelligence.
             </p>
 
-            <p className="mt-5 max-w-2xl text-base leading-7 text-slate-400">
-              Connect securely with Microsoft Entra ID and discover
-              the Azure subscriptions available to your account.
+            <p className="mt-5 max-w-2xl leading-7 text-slate-400">
+              Connect your Azure environment, select a subscription,
+              and build the first security-focused resource inventory.
             </p>
           </header>
 
           {!account ? (
-            <div className="mt-10">
-              <button
-                type="button"
-                onClick={signIn}
-                disabled={busy}
-                className="rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Connect Azure
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={signIn}
+              disabled={busy}
+              className="mt-10 rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-60"
+            >
+              Connect Azure
+            </button>
           ) : (
-            <div className="mt-10">
+            <section className="mt-10 space-y-6">
               <p className="text-sm text-slate-300">
                 Signed in as{" "}
                 <span className="font-semibold text-white">
@@ -195,14 +259,14 @@ export default function Home() {
                 </span>
               </p>
 
-              <div className="mt-5 flex flex-wrap gap-4">
+              <div className="flex flex-wrap gap-4">
                 <button
                   type="button"
                   onClick={discoverSubscriptions}
                   disabled={busy}
-                  className="rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-lg bg-sky-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-60"
                 >
-                  {isLoadingSubscriptions
+                  {isDiscoveringSubscriptions
                     ? "Discovering..."
                     : "Discover Subscriptions"}
                 </button>
@@ -211,12 +275,54 @@ export default function Home() {
                   type="button"
                   onClick={signOut}
                   disabled={busy}
-                  className="rounded-lg border border-slate-700 px-6 py-3 font-semibold text-slate-200 transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-lg border border-slate-700 px-6 py-3 font-semibold text-slate-200 transition hover:bg-slate-900 disabled:opacity-60"
                 >
                   Sign Out
                 </button>
               </div>
-            </div>
+
+              {subscriptions.length > 0 && (
+                <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-6">
+                  <label
+                    htmlFor="subscription"
+                    className="text-sm font-semibold text-slate-200"
+                  >
+                    Azure subscription
+                  </label>
+
+                  <select
+                    id="subscription"
+                    value={selectedSubscriptionId}
+                    onChange={(event) => {
+                      setSelectedSubscriptionId(event.target.value);
+                      setResources([]);
+                      setResourceSummary([]);
+                    }}
+                    className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-white"
+                  >
+                    {subscriptions.map((subscription) => (
+                      <option
+                        key={subscription.subscriptionId}
+                        value={subscription.subscriptionId}
+                      >
+                        {subscription.displayName}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={scanSelectedSubscription}
+                    disabled={busy || !selectedSubscriptionId}
+                    className="mt-5 rounded-lg bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
+                  >
+                    {isScanningResources
+                      ? "Scanning Resources..."
+                      : "Run Inventory Scan"}
+                  </button>
+                </div>
+              )}
+            </section>
           )}
 
           <div
@@ -228,7 +334,7 @@ export default function Home() {
             </p>
           </div>
 
-          {subscriptions.length > 0 && (
+          {resourceSummary.length > 0 && (
             <section className="mt-12">
               <div className="flex items-end justify-between gap-4">
                 <div>
@@ -237,58 +343,32 @@ export default function Home() {
                   </p>
 
                   <h2 className="mt-2 text-3xl font-semibold">
-                    Azure Subscriptions
+                    Resources by Type
                   </h2>
                 </div>
 
                 <p className="text-sm text-slate-400">
-                  {subscriptions.length} discovered
+                  {resources.length} total resources
                 </p>
               </div>
 
-              <div className="mt-6 grid gap-5">
-                {subscriptions.map((subscription) => (
+              <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {resourceSummary.map((item) => (
                   <article
-                    key={subscription.subscriptionId}
+                    key={item.resourceType}
                     className="rounded-xl border border-slate-800 bg-slate-900/60 p-6"
                   >
-                    <div className="flex flex-col justify-between gap-5 md:flex-row md:items-start">
-                      <div>
-                        <h3 className="text-xl font-semibold text-white">
-                          {subscription.displayName}
-                        </h3>
+                    <p className="text-4xl font-bold text-white">
+                      {item.count}
+                    </p>
 
-                        <p className="mt-2 break-all font-mono text-sm text-slate-400">
-                          {subscription.subscriptionId}
-                        </p>
-                      </div>
+                    <h3 className="mt-3 font-semibold text-slate-200">
+                      {item.displayName}
+                    </h3>
 
-                      <span className="w-fit rounded-full border border-emerald-800 bg-emerald-950/50 px-3 py-1 text-xs font-semibold text-emerald-300">
-                        {subscription.state}
-                      </span>
-                    </div>
-
-                    <dl className="mt-6 grid gap-4 border-t border-slate-800 pt-5 md:grid-cols-2">
-                      <div>
-                        <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Tenant ID
-                        </dt>
-
-                        <dd className="mt-2 break-all font-mono text-sm text-slate-300">
-                          {subscription.tenantId}
-                        </dd>
-                      </div>
-
-                      <div>
-                        <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                          Resource ID
-                        </dt>
-
-                        <dd className="mt-2 break-all font-mono text-sm text-slate-300">
-                          {subscription.id}
-                        </dd>
-                      </div>
-                    </dl>
+                    <p className="mt-2 break-all font-mono text-xs text-slate-500">
+                      {item.resourceType}
+                    </p>
                   </article>
                 ))}
               </div>
