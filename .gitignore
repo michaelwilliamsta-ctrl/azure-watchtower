@@ -1,0 +1,28 @@
+# .NET
+**/bin/
+**/obj/
+.vs/
+*.user
+*.suo
+
+# Node / Next.js
+**/node_modules/
+**/.next/
+**/out/
+**/.env.local
+**/.env.*.local
+
+# Editors
+.vscode/
+.idea/
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Tests
+TestResults/
+coverage/
