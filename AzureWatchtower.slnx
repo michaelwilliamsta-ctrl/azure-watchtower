@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AzureWatchtower.Api/AzureWatchtower.Api.csproj" />
+    <Project Path="src/AzureWatchtower.Core/AzureWatchtower.Core.csproj" />
+    <Project Path="src/AzureWatchtower.Inventory/AzureWatchtower.Inventory.csproj" />
+    <Project Path="src/AzureWatchtower.Shared/AzureWatchtower.Shared.csproj" />
+  </Folder>
+</Solution>
