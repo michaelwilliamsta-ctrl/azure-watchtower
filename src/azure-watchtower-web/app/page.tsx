@@ -45,6 +45,10 @@ export default function Home() {
     ResourceTypeSummary[]
   >([]);
 
+  const [selectedResourceType, setSelectedResourceType] = useState<
+    string | null
+  >(null);
+
   const [statusMessage, setStatusMessage] = useState(
     "Connect your Microsoft account to begin.",
   );
@@ -62,6 +66,12 @@ export default function Home() {
     inProgress !== InteractionStatus.None ||
     isDiscoveringSubscriptions ||
     isScanningResources;
+
+  const selectedResources = selectedResourceType
+    ? resources.filter(
+        (resource) => resource.type === selectedResourceType,
+      )
+    : [];
 
   async function signIn(): Promise<void> {
     setStatusMessage("Opening Microsoft sign-in...");
@@ -104,6 +114,7 @@ export default function Home() {
       setSelectedSubscriptionId("");
       setResources([]);
       setResourceSummary([]);
+      setSelectedResourceType(null);
       setStatusMessage("Discovering Azure subscriptions...");
 
       const accessToken = await getAzureAccessToken();
@@ -142,6 +153,7 @@ export default function Home() {
       setIsScanningResources(true);
       setResources([]);
       setResourceSummary([]);
+      setSelectedResourceType(null);
       setStatusMessage("Querying Azure Resource Graph...");
 
       const accessToken = await getAzureAccessToken();
@@ -297,6 +309,7 @@ export default function Home() {
                       setSelectedSubscriptionId(event.target.value);
                       setResources([]);
                       setResourceSummary([]);
+                      setSelectedResourceType(null);
                     }}
                     className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-white"
                   >
@@ -353,25 +366,164 @@ export default function Home() {
               </div>
 
               <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                {resourceSummary.map((item) => (
-                  <article
-                    key={item.resourceType}
-                    className="rounded-xl border border-slate-800 bg-slate-900/60 p-6"
-                  >
-                    <p className="text-4xl font-bold text-white">
-                      {item.count}
-                    </p>
+                {resourceSummary.map((item) => {
+                  const isSelected =
+                    selectedResourceType === item.resourceType;
 
-                    <h3 className="mt-3 font-semibold text-slate-200">
-                      {item.displayName}
-                    </h3>
+                  return (
+                    <button
+                      key={item.resourceType}
+                      type="button"
+                      aria-pressed={isSelected}
+                      aria-controls="selected-resource-details"
+                      onClick={() =>
+                        setSelectedResourceType(item.resourceType)
+                      }
+                      className={`rounded-xl border p-6 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 ${
+                        isSelected
+                          ? "border-sky-400 bg-sky-950/60"
+                          : "border-slate-800 bg-slate-900/60 hover:border-slate-600 hover:bg-slate-900"
+                      }`}
+                    >
+                      <span className="block text-4xl font-bold text-white">
+                        {item.count}
+                      </span>
 
-                    <p className="mt-2 break-all font-mono text-xs text-slate-500">
-                      {item.resourceType}
-                    </p>
-                  </article>
-                ))}
+                      <span className="mt-3 block font-semibold text-slate-200">
+                        {item.displayName}
+                      </span>
+
+                      <span className="mt-2 block break-all font-mono text-xs text-slate-500">
+                        {item.resourceType}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
+
+              {selectedResourceType && (
+                <section
+                  id="selected-resource-details"
+                  className="mt-12"
+                  aria-labelledby="selected-resource-heading"
+                >
+                  <div className="flex flex-wrap items-end justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-[0.2em] text-emerald-400">
+                        Resource Details
+                      </p>
+
+                      <h2
+                        id="selected-resource-heading"
+                        className="mt-2 text-3xl font-semibold"
+                      >
+                        {selectedResourceType}
+                      </h2>
+
+                      <p className="mt-2 text-sm text-slate-400">
+                        {selectedResources.length} matching resource
+                        {selectedResources.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setSelectedResourceType(null)}
+                      className="rounded-lg border border-slate-700 px-5 py-2.5 font-semibold text-slate-200 transition hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+
+                  <div className="mt-6 space-y-5">
+                    {selectedResources.map((resource) => {
+                      const tags = Object.entries(resource.tags ?? {});
+
+                      return (
+                        <article
+                          key={resource.id}
+                          className="rounded-xl border border-slate-800 bg-slate-900/60 p-6"
+                        >
+                          <h3 className="text-xl font-semibold text-white">
+                            {resource.name}
+                          </h3>
+
+                          <dl className="mt-5 grid gap-5 sm:grid-cols-2">
+                            <div>
+                              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                Type
+                              </dt>
+                              <dd className="mt-1 break-all font-mono text-sm text-slate-200">
+                                {resource.type}
+                              </dd>
+                            </div>
+
+                            <div>
+                              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                Location
+                              </dt>
+                              <dd className="mt-1 text-sm text-slate-200">
+                                {resource.location || "Not specified"}
+                              </dd>
+                            </div>
+
+                            <div>
+                              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                Resource Group
+                              </dt>
+                              <dd className="mt-1 break-all text-sm text-slate-200">
+                                {resource.resourceGroup || "Not specified"}
+                              </dd>
+                            </div>
+
+                            <div>
+                              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                Subscription ID
+                              </dt>
+                              <dd className="mt-1 break-all font-mono text-sm text-slate-200">
+                                {resource.subscriptionId}
+                              </dd>
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                Azure Resource ID
+                              </dt>
+                              <dd className="mt-1 break-all font-mono text-sm text-slate-200">
+                                {resource.id}
+                              </dd>
+                            </div>
+                          </dl>
+
+                          {tags.length > 0 && (
+                            <div className="mt-6 border-t border-slate-800 pt-5">
+                              <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                                Tags
+                              </h4>
+
+                              <dl className="mt-3 flex flex-wrap gap-2">
+                                {tags.map(([key, value]) => (
+                                  <div
+                                    key={key}
+                                    className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+                                  >
+                                    <dt className="inline font-semibold text-sky-400">
+                                      {key}
+                                    </dt>
+                                    <dd className="inline text-slate-300">
+                                      {`: ${value}`}
+                                    </dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
             </section>
           )}
         </div>
